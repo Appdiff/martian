@@ -1,0 +1,14 @@
+.dockerignore
+.idea
+.git
+.gitignore
+.travis.yml
+build-docker-image.sh
+ci
+start-docker-container.sh
+CONTRIBUTING
+Dockerfile
+LICENSE
+README.md
+helm
+*_test.go

@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "martian-proxy.fullname" . }}
+  labels:
+    {{- include "martian-proxy.labels" . | nindent 4 }}
+  annotations:
+    cloud.google.com/neg: '{"ingress": true}'
+    {{- if not .Values.service.external }}
+    cloud.google.com/load-balancer-type: "Internal"
+    {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  externalTrafficPolicy: Local
+  ports:
+    - port: {{ .Values.service.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "martian-proxy.selectorLabels" . | nindent 4 }}

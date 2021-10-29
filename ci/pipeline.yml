@@ -1,0 +1,260 @@
+resource_types:
+  - name: pull-request
+    type: registry-image
+    source:
+      repository: teliaoss/github-pr-resource
+
+  - name: helm
+    type: registry-image
+    source:
+      repository: typositoire/concourse-helm3-resource
+
+  - name: commit-status
+    type: registry-image
+    source:
+      repository: resource/github-status
+      tag: latest
+
+  - name: slack-notification
+    type: registry-image
+    source:
+      repository: cfcommunity/slack-notification-resource
+      tag: latest
+
+  - name: helm-artifactory
+    type: registry-image
+    source:
+      repository: appdiff/helm-artifactory-resource
+
+  - name: registry-image-future
+    type: registry-image
+    source:
+      repository: concourse/registry-image-resource
+
+resources:
+  - name: src
+    type: pull-request
+    source:
+      repository: Appdiff/martian-proxy
+      access_token: ((github-access-token))
+
+  - name: development
+    type: git
+    source:
+      branch: 'development'
+      uri: ssh://git@github.com/Appdiff/martian-proxy.git
+      private_key: ((git-ssh-key))
+
+  - name: main
+    type: git
+    source:
+      branch: 'main'
+      uri: ssh://git@github.com/Appdiff/martian-proxy.git
+      private_key: ((git-ssh-key))
+
+  - name: version
+    type: semver
+    source:
+      driver: git
+      uri: ssh://git@github.com/Appdiff/martian-proxy.git
+      branch: version
+      file: version
+      private_key: ((git-ssh-key))
+
+  - name: prod-version
+    type: semver
+    source:
+      driver: git
+      uri: ssh://git@github.com/Appdiff/martian-proxy.git
+      branch: version
+      file: prod-version
+      private_key: ((git-ssh-key))
+
+  - name: slack-alert
+    type: slack-notification
+    source:
+      url: ((slack.url))
+
+  - name: commit-status
+    type: commit-status
+    source:
+      repo: Appdiff/martian-proxy
+      access_token: ((github-access-token))
+
+  - name: docker-image-dev
+    type: registry-image-future
+    source:
+      repository: carbon-docker-dev.test.ai/carbon/martian-proxy
+      username: ((artifactory-username))
+      password: ((artifactory-password))
+
+  - name: docker-image-prod
+    type: registry-image-future
+    source:
+      repository: carbon-docker-prod.test.ai/carbon/martian-proxy
+      username: ((artifactory-username))
+      password: ((artifactory-password))
+
+  - name: helm-chart
+    type: helm-artifactory
+    source:
+      url: https://artifactory.test.ai
+      group: carbon
+      name: martian-proxy
+      repository: carbon-helm-dev
+      username: ((artifactory-username))
+      password: ((artifactory-password))
+
+  - name: helm-release
+    type: helm
+    source:
+      release: martian-proxy
+      namespace: carbon
+      repos:
+          - name: testai
+            url: https://artifactory.test.ai/artifactory/helm
+
+jobs:
+  - name: test pull request
+    plan:
+      - get: src
+        trigger: true
+      - task: build
+        privileged: true
+        file: src/ci/build-docker-image.yml
+    on_success:
+      put: src
+      params:
+        path: src
+        status: success
+    on_failure:
+      in_parallel:
+        - put: src
+          params:
+            path: src
+            status: failure
+        - &slack-alert
+          put: slack-alert
+          params:
+            username: Pipeline Alert
+            channel: ((slack.channel))
+            text: |
+              The build failed for martian-proxy, please check it out at:
+              https://concourse.test.ai/builds/$BUILD_ID
+            icon_emoji: ((slack.emoji))
+            silent: true
+
+  - name: build dev
+    plan:
+      - get: development
+        trigger: true
+      - get: version
+        params: {bump: patch}
+      - load_var: version
+        file: version/version
+      - task: build
+        privileged: true
+        file: development/ci/build-docker-image.yml
+        input_mapping:
+          src: development
+      - put: docker-image-dev
+        params:
+          image: image/image.tar
+          version: ((.:version))
+          bump_aliases: true
+      - put: helm-chart
+        params:
+          chart: development/helm
+          version: version/version
+      - put: version
+        params:
+          file: version/version
+    on_success:
+      put: commit-status
+      params:
+        description: Build successful!
+        path: development
+        state: success
+    on_failure:
+      in_parallel:
+        - put: commit-status
+          params:
+            description: Tests failed
+            path: development
+            state: failure
+        - *slack-alert
+
+  - name: deploy dev
+    serial: true
+    plan:
+      - get: development
+        passed: [build dev]
+      - get: version
+        passed: [build dev]
+        trigger: true
+      - put: helm-release
+        params:
+          chart: testai/martian-proxy
+          version: version/version
+          kubeconfig: ((kubeconfig-dev))
+          check_is_ready: true
+          values: development/ci/deployment-config.yml
+    on_success:
+      put: commit-status
+      params:
+        description: Deployment successful!
+        path: development
+        state: success
+    on_failure:
+      in_parallel:
+        - put: commit-status
+          params:
+            description: Deployment failed
+            path: development
+            state: failure
+        - *slack-alert
+
+  - name: promote to production
+    serial: true
+    plan:
+      - get: development
+        passed: [deploy dev]
+      - get: version
+        passed: [deploy dev]
+      - load_var: version
+        file: version/version
+      - put: main
+        params:
+          repository: development
+          merge: true
+      - get: docker-image-dev
+        params:
+          format: oci
+      - put: docker-image-prod
+        params:
+          image: docker-image-dev/image.tar
+          version: ((.:version))
+          bump_aliases: true
+      - put: prod-version
+        params:
+          file: version/version
+    on_failure:
+      *slack-alert
+
+  - name: deploy prod
+    serial: true
+    plan:
+      - get: main
+        passed: [promote to production]
+      - get: prod-version
+        passed: [promote to production]
+        trigger: true
+      - put: helm-release
+        params:
+          chart: testai/martian-proxy
+          version: prod-version/version
+          kubeconfig: ((kubeconfig-prod))
+          check_is_ready: true
+          values: main/ci/deployment-config.yml
+    on_failure:
+      *slack-alert

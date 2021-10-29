@@ -1,0 +1,16 @@
+service:
+  type: LoadBalancer
+arguments:
+  - "-addr=:9999"
+  - "-publish"
+rabbitmq:
+  username: carbon
+  virtualHost: carbon
+  queue: martian-proxy
+mongodb:
+  dedicated: false
+  uri: mongodb://mongodb-0.mongodb-headless.carbon.svc,mongodb-1.mongodb-headless.carbon.svc,mongodb-2.mongodb-headless.carbon.svc/?replicaSet=rs0
+resources:
+  requests:
+    cpu: 100m
+    memory: 250M

@@ -1,0 +1,39 @@
+{{- if .Values.ingress.enabled -}}
+{{- $fullName := include "carbon.fullname" . -}}
+{{- $svcPort := .Values.service.port -}}
+apiVersion: networking.gke.io/v1beta1
+kind: FrontendConfig
+metadata:
+  name: {{ $fullName }}-ingress-policy
+spec:
+  sslPolicy: default-ingress-policy
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $fullName }}
+  labels:
+    {{- include "carbon.labels" . | nindent 4 }}
+  annotations:
+    {{- if not $.Values.ingress.exposed }}
+    kubernetes.io/ingress.class: "gce-internal"
+    {{- end }}
+    {{- if .Values.ingress.tls }}
+    kubernetes.io/ingress.allow-http: "false"
+    {{- end }}
+    {{- with .Values.ingress.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  {{- if .Values.ingress.tls }}
+  tls:
+    {{- range .Values.ingress.tls }}
+    - secretName: {{ .secretName }}
+    {{- end }}
+  {{- end }}
+  defaultBackend:
+    service:
+      name: {{ $fullName }}
+      port:
+        number: 80
+{{- end }}
