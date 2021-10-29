@@ -35,28 +35,28 @@ resources:
   - name: src
     type: pull-request
     source:
-      repository: Appdiff/martian-proxy
+      repository: Appdiff/martian
       access_token: ((github-access-token))
 
   - name: development
     type: git
     source:
       branch: 'development'
-      uri: ssh://git@github.com/Appdiff/martian-proxy.git
+      uri: ssh://git@github.com/Appdiff/martian.git
       private_key: ((git-ssh-key))
 
   - name: main
     type: git
     source:
       branch: 'main'
-      uri: ssh://git@github.com/Appdiff/martian-proxy.git
+      uri: ssh://git@github.com/Appdiff/martian.git
       private_key: ((git-ssh-key))
 
   - name: version
     type: semver
     source:
       driver: git
-      uri: ssh://git@github.com/Appdiff/martian-proxy.git
+      uri: ssh://git@github.com/Appdiff/martian.git
       branch: version
       file: version
       private_key: ((git-ssh-key))
@@ -65,7 +65,7 @@ resources:
     type: semver
     source:
       driver: git
-      uri: ssh://git@github.com/Appdiff/martian-proxy.git
+      uri: ssh://git@github.com/Appdiff/martian.git
       branch: version
       file: prod-version
       private_key: ((git-ssh-key))
@@ -78,7 +78,7 @@ resources:
   - name: commit-status
     type: commit-status
     source:
-      repo: Appdiff/martian-proxy
+      repo: Appdiff/martian
       access_token: ((github-access-token))
 
   - name: docker-image-dev
