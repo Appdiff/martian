@@ -194,6 +194,12 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"flag"
+	"fmt"
+	"github.com/google/martian/v3/mongodb"
+	"github.com/google/martian/v3/rabbitmq"
+	"github.com/kamva/mgm/v3"
+	"github.com/streadway/amqp"
+	"go.mongodb.org/mongo-driver/mongo/options"
 	"log"
 	"net"
 	"net/http"
@@ -211,6 +217,7 @@ import (
 	"github.com/google/martian/v3/fifo"
 	"github.com/google/martian/v3/har"
 	"github.com/google/martian/v3/httpspec"
+	"github.com/google/martian/v3/jsonlog"
 	"github.com/google/martian/v3/marbl"
 	"github.com/google/martian/v3/martianhttp"
 	"github.com/google/martian/v3/martianlog"
@@ -250,6 +257,8 @@ var (
 	trafficShaping = flag.Bool("traffic-shaping", false, "enable traffic shaping API")
 	skipTLSVerify  = flag.Bool("skip-tls-verify", false, "skip TLS server verification; insecure")
 	dsProxyURL     = flag.String("downstream-proxy-url", "", "URL of downstream proxy")
+	db     		   = flag.Bool("db", false, "enable DB storage")
+	publish        = flag.Bool("publish", false, "enable RabbitMQ publishing")
 )
 
 func main() {
@@ -387,11 +396,92 @@ func main() {
 		configure("/logs/reset", har.NewResetHandler(hl), mux)
 	}
 
+	if *db {
+		mongoURI := os.Getenv("MONGO_URI")
+		if mongoURI == "" {
+			mongoURI = "mongodb://localhost:27017"
+		}
+		mongoDB := os.Getenv("MONGO_DB")
+		if mongoDB == "" {
+			mongoDB = "martian-proxy"
+		}
+		_ = mgm.SetDefaultConfig(nil, mongoDB, options.Client().ApplyURI(mongoURI))
+		dbLogger := mongodb.NewLogger()
+		muxf := servemux.NewFilter(mux)
+		// Only append to HAR logs when the requests are not API requests,
+		// that is, they are not matched in http.DefaultServeMux
+		muxf.RequestWhenFalse(dbLogger)
+		muxf.ResponseWhenFalse(dbLogger)
+
+		stack.AddRequestModifier(muxf)
+		stack.AddResponseModifier(muxf)
+
+		configure("/mappings", mongodb.NewMappingHandler(dbLogger), mux)
+		configure("/data", mongodb.RetrieveDataHandler(dbLogger), mux)
+	}
+
+	if *publish {
+		rabbitMQHost := os.Getenv("RABBITMQ_HOST")
+		if rabbitMQHost == "" {
+			rabbitMQHost = "localhost"
+		}
+		rabbitMQUsername := os.Getenv("RABBITMQ_USERNAME")
+		if rabbitMQUsername == "" {
+			rabbitMQUsername = "guest"
+		}
+		rabbitMQPassword := os.Getenv("RABBITMQ_PASSWORD")
+		if rabbitMQPassword == "" {
+			rabbitMQPassword = "guest"
+		}
+		rabbitMQVirtualHost := os.Getenv("RABBITMQ_VIRTUAL_HOST")
+		if rabbitMQVirtualHost == "" || rabbitMQVirtualHost == "/" {
+			rabbitMQVirtualHost = ""
+		}
+		connection, err := amqp.DialConfig(fmt.Sprintf("amqp://%s:5672/%s", rabbitMQHost, rabbitMQVirtualHost), amqp.Config{
+			SASL:   []amqp.Authentication{&amqp.PlainAuth{Username: rabbitMQUsername, Password: rabbitMQPassword}},
+		})
+		if err != nil {
+			log.Fatalf("%s: %s", "Failed to connect to RabbitMQ", err)
+		}
+		defer connection.Close()
+		channel, err := connection.Channel()
+		if err != nil {
+			log.Fatalf("%s: %s", "Failed to open a RabbitMQ channel", err)
+		}
+		defer channel.Close()
+		queue, err := channel.QueueDeclare(
+			"martian-proxy", // name
+			false,   // durable
+			false,   // delete when unused
+			false,   // exclusive
+			false,   // no-wait
+			nil,     // arguments
+		)
+		if err != nil {
+			log.Fatalf("%s: %s", "Failed to declare RabbitMQ queue", err)
+		}
+		rabbitMQLogger := rabbitmq.NewLogger(channel, queue)
+		muxf := servemux.NewFilter(mux)
+		// Only append to HAR logs when the requests are not API requests,
+		// that is, they are not matched in http.DefaultServeMux
+		muxf.RequestWhenFalse(rabbitMQLogger)
+		muxf.ResponseWhenFalse(rabbitMQLogger)
+
+		stack.AddRequestModifier(muxf)
+		stack.AddResponseModifier(muxf)
+	}
+
 	logger := martianlog.NewLogger()
 	logger.SetDecode(true)
 
 	stack.AddRequestModifier(logger)
 	stack.AddResponseModifier(logger)
+
+	customLogger := jsonlog.NewLogger()
+	customLogger.SetDecode(true)
+
+	stack.AddRequestModifier(customLogger)
+	stack.AddResponseModifier(customLogger)
 
 	if *marblLogging {
 		lsh := marbl.NewHandler()
